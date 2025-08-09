@@ -3,22 +3,21 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>BTC Timeline — CoinGecko + GNews</title>
+<title>BTC Timeline — CoinGecko + GNews (iOS fixed)</title>
 <link rel="preconnect" href="https://api.coingecko.com">
 <link rel="preconnect" href="https://gnews.io">
+<!-- Chart.js + date adapter (REQUIRED for time scale) -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
 <style>
-  :root{
-    --h:560px; --ui:#0ea5e9; --bg:#f3f4f6; --card:#fff; --ink:#0f172a; --muted:#6b7280; --line:#cbd5e1;
-    --bull-bg:#e9f8ef; --bear-bg:#ffe9ea; --good:#10b981; --bad:#ef4444;
-  }
+  :root{ --h:560px; --ui:#0ea5e9; --bg:#f3f4f6; --card:#fff; --ink:#0f172a; --muted:#6b7280; --line:#cbd5e1; --bull-bg:#e9f8ef; --bear-bg:#ffe9ea; --good:#10b981; --bad:#ef4444; }
   *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,system-ui,sans-serif;background:var(--bg);color:var(--ink)}
   header{position:sticky;top:0;z-index:40;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px;background:#ffffffdd;border-bottom:1px solid #e5e7eb;backdrop-filter:blur(6px)}
   .left,.right{display:flex;gap:10px;align-items:center}
   .brand{font-weight:800}
   .theme{width:20px;height:20px;border-radius:50%;border:2px solid #e5e7eb;cursor:pointer}.theme.active{outline:2px solid var(--ui)}
   .blue{background:#0ea5e9}.green{background:#22c55e}.purple{background:#a855f7}
-  .dm{width:36px;height:36px;border-radius:999px;border:1px solid #d1d5db;background:#fff;display:grid;place-items:center;cursor:pointer}
+  .dm{width:36px;height:36px;border-radius:999px;border:1px solid #d1d5d6;background:#fff;display:grid;place-items:center;cursor:pointer}
   .topbar{position:absolute;left:0;right:0;bottom:-2px;height:3px;background:#e5e7eb}.prog{width:0%;height:100%;background:linear-gradient(90deg,var(--ui),#3b82f6);transition:width .25s ease}
 
   .grid{display:grid;grid-template-columns:360px 1fr 260px;gap:16px;padding:16px}
@@ -27,8 +26,7 @@
   .muted{color:var(--muted);font-size:12px}
   .kpi{display:flex;justify-content:space-between;padding:6px 0}
   .summary{background:#f9fafb;border:1px dashed #e5e7eb;border-radius:12px;padding:10px;font-size:13px;color:#374151}
-  .list{margin:8px 0 0 18px;padding:0}
-  .list li{margin:6px 0}
+  .list{margin:8px 0 0 18px;padding:0}.list li{margin:6px 0}
 
   .tl{position:relative;overflow:hidden;height:var(--h)}
   .split{position:absolute;inset:0;display:grid;grid-template-rows:1fr 1fr}
@@ -49,6 +47,7 @@
   .overlay{position:fixed;inset:0;background:#ffffffd9;backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;flex-direction:column;gap:10px;z-index:50}
   .bar{width:360px;height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden}.bar>div{width:0%;height:100%;background:linear-gradient(90deg,var(--ui),#3b82f6);transition:width .25s ease}
 
+  .err{margin-top:10px;font-size:12px;color:#b91c1c}
   @media(prefers-color-scheme:dark){
     body{background:#0b0e13;color:#e5e7eb} header{background:#0f131add;border-bottom-color:#1f2937}
     .card{background:#0f131a;border-color:#1f2937}.summary{background:#0b0e13;border-color:#1f2937;color:#cbd5e1}
@@ -84,6 +83,7 @@
     <div class="summary">
       <strong>Top 3 headlines</strong>
       <ol id="top3" class="list"></ol>
+      <div id="errBox" class="err"></div>
     </div>
   </div></div>
 
@@ -112,12 +112,12 @@
 
 <script>
 (()=> {
-  // ========== CONFIG ==========
-  const GNEWS_TOKEN = "3a3a1f803ef9a81c76b9499ba02c35fc"; // Provided by you
-  const DAYS = 30;   // last 1M
+  // -------- CONFIG --------
+  const GNEWS_TOKEN = "3a3a1f803ef9a81c76b9499ba02c35fc"; // your key
+  const DAYS = 30;
   const MAX_BUBBLES = 20;
 
-  // ========== THEME ==========
+  // -------- THEME --------
   const root=document.documentElement, topProg=document.getElementById('topProg');
   const themes=document.querySelectorAll('.theme');
   const themeMap={blue:'#0ea5e9',green:'#22c55e',purple:'#a855f7'};
@@ -127,10 +127,11 @@
   document.getElementById('dm').onclick=()=> document.body.classList.toggle('force-dark');
   const setTop=p=> topProg.style.width=p+'%';
 
-  // ========== ELEMENTS ==========
+  // -------- ELEMENTS --------
   const statsBox=document.getElementById('stats');
   const summaryBox=document.getElementById('summaryBox');
   const top3List=document.getElementById('top3');
+  const errBox=document.getElementById('errBox');
   const bubbleLayer=document.getElementById('bubbleLayer');
   const centerLine=document.getElementById('centerLine');
   const tip=document.getElementById('tooltip');
@@ -140,29 +141,38 @@
   const stepOverlay=(p,t)=>{ ovFill.style.width=p+'%'; if(t) ovTxt.textContent=t; };
   const hideOverlay=()=> overlay.style.display='none';
 
-  // ========== CHART ==========
+  const fmt = v => v==null?'—': v>1e12?(v/1e12).toFixed(2)+'T': v>1e9?(v/1e9).toFixed(2)+'B': v>1e6?(v/1e6).toFixed(2)+'M': (Math.round(v*100)/100).toLocaleString();
+
+  // -------- CHART --------
   let chart, chartData=[];
   async function loadPrices(){
     setTop(10);
     const url=`https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=${DAYS}`;
-    const r=await fetch(url); const data=await r.json();
-    const prices=(data.prices||[]); chartData = prices.map(p=>({t:p[0], y:p[1]}));
+    const r=await fetch(url); if(!r.ok) throw new Error('CoinGecko '+r.status);
+    const data=await r.json();
+    const prices=(data.prices||[]);
+    chartData = prices.map(p=>({t:p[0], y:p[1]}));
     const ctx=document.getElementById('chart').getContext('2d');
     if(chart) chart.destroy();
     chart = new Chart(ctx,{
       type:'line',
       data:{datasets:[{data:chartData,parsing:{xAxisKey:'t',yAxisKey:'y'},borderColor:'#0f172a',borderWidth:2,pointRadius:0,tension:.25}]},
-      options:{responsive:true,maintainAspectRatio:false,scales:{x:{type:'time',time:{unit:'week'},grid:{display:false}},y:{grid:{color:'rgba(148,163,184,.25)'}}},plugins:{legend:{display:false},tooltip:{enabled:false}}}
+      options:{responsive:true,maintainAspectRatio:false,scales:{
+        x:{type:'time', time:{unit:'week'}, grid:{display:false}},
+        y:{grid:{color:'rgba(148,163,184,.25)'}}
+      },plugins:{legend:{display:false},tooltip:{enabled:false}}}
     });
-    const first=prices[0]?.[1], last=prices.at(-1)?.[1], ch=((last-first)/first)*100;
+    const first = prices.length? prices[0][1] : null;
+    const last  = prices.length? prices[prices.length-1][1] : null;
+    const ch = (first && last)? ((last-first)/first)*100 : 0;
     statsBox.innerHTML = `
       <div class="kpi"><span>Price</span><strong>$${fmt(last)}</strong></div>
       <div class="kpi"><span>Change (1M)</span><strong class="${ch>=0?'good':'bad'}">${(ch||0).toFixed(2)}%</strong></div>`;
-    setTop(30);
+    setTop(35);
     return {first,last,ch};
   }
 
-  // ========== NEWS (GNews) ==========
+  // -------- NEWS (GNews) --------
   function toDomain(url){ try{ return new URL(url).hostname.replace(/^www\./,''); }catch(e){ return ''; } }
   async function loadNews(){
     setTop(55);
@@ -170,23 +180,26 @@
     const fromISO = new Date(Date.now()-DAYS*86400000).toISOString();
     const q = encodeURIComponent(`Bitcoin OR BTC cryptocurrency`);
     const url = `https://gnews.io/api/v4/search?q=${q}&lang=en&country=us&from=${fromISO}&to=${toISO}&in=title&max=50&sortby=publishedAt&token=${GNEWS_TOKEN}`;
-    const r=await fetch(url); if(!r.ok) throw new Error('GNews error '+r.status);
+    const r=await fetch(url); if(!r.ok) throw new Error('GNews '+r.status);
     const data=await r.json();
-    const items=(data.articles||[]).map(a=>({
-      title:a.title, url:a.url, image:a.image||'', domain: a.source?.name? a.source.name.toLowerCase().replace(/^www\./,'') : toDomain(a.url),
-      ts: Date.parse(a.publishedAt), desc: a.description||''
+    const arts = data.articles||[];
+    const items = arts.map(a=>({
+      title:a.title||'', url:a.url||'', image:a.image||'',
+      domain: a.source && a.source.name ? String(a.source.name).toLowerCase().replace(/^www\./,'') : toDomain(a.url||''),
+      ts: a.publishedAt ? Date.parse(a.publishedAt) : 0, desc: a.description||''
     })).filter(x=> x.ts && x.url && x.title);
     setTop(75);
     return items;
   }
 
-  // ========== RENDER ==========
-  const fmt = v => v==null?'—': v>1e12?(v/1e12).toFixed(2)+'T': v>1e9?(v/1e9).toFixed(2)+'B': v>1e6?(v/1e6).toFixed(2)+'M': (Math.round(v*100)/100).toLocaleString();
+  // -------- RENDER --------
   const pxFor = (ms) => chart.scales.x.getPixelForValue(ms);
 
   function renderBubbles(items, kpi){
     bubbleLayer.innerHTML='';
-    // rank (neutral relevance = recency + source weight)
+    errBox.textContent='';
+
+    // relevance: recency + source weight (neutral sentiment)
     const start = Date.now()-DAYS*86400000;
     items = items.filter(i=> i.ts>=start);
     items.forEach(i=>{
@@ -203,8 +216,9 @@
     const cy = h/2; centerLine.style.top = cy+'px';
 
     // top 3
-    const top3 = [...list].sort((a,b)=> b.rel - a.rel).slice(0,3);
-    top3List.innerHTML = top3.map(n=> `<li><a href="${n.url}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a> <span class="muted">(${n.domain})</span></li>`).join('');
+    const t3 = items.slice(0,3);
+    const top3List = document.getElementById('top3');
+    top3List.innerHTML = t3.map(n=> `<li><a href="${n.url}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a> <span class="muted">(${escapeHtml(n.domain)})</span></li>`).join('');
 
     // summary
     const ch = kpi.ch||0;
@@ -213,39 +227,35 @@
       <div><strong>Bitcoin</strong> moved <strong class="${ch>=0?'good':'bad'}">${(ch||0).toFixed(2)}%</strong> over the last <strong>1M</strong>.</div>
       <div class="muted">${escapeHtml(snip)}</div>`;
 
-    // draw bubbles (neutral: on center line, slight alternating offset for readability)
     const tip = document.getElementById('tooltip');
     list.forEach((n, idx)=>{
       const x = pxFor(n.ts);
-      const offset = ((idx%2===0)? -1 : 1) * (20 + (idx%5)*6); // small visual stagger
+      const offset = ((idx%2===0)? -1 : 1) * (20 + (idx%5)*6); // stagger for readability
       const y = cy + offset;
       const size = 22 + Math.min(1, Math.max(0, n.rel))*48;
 
-      const col=document.createElement('div'); col.className='col'; col.style.left=x+'px';
+      const col=document.createElement('div'); col.className='col'; col.style.left = x+'px';
       const v=document.createElement('div'); v.className='vline'; v.style.top=Math.min(cy,y)+'px'; v.style.height=Math.abs(cy-y)+'px'; v.style.left='50%'; v.style.transform='translateX(-50%)';
       const tag=document.createElement('div'); tag.className='date'; tag.style.top=cy+'px'; tag.textContent=new Date(n.ts).toLocaleDateString();
 
-      const b=document.createElement('div'); b.className='bubble neu'+(top3.includes(n)?' top3':'');
+      const b=document.createElement('div'); b.className='bubble neu'+(t3.indexOf(n)>=0?' top3':'');
       b.style.width=size+'px'; b.style.height=size+'px'; b.style.top=(y - size/2)+'px'; b.title=n.title;
       b.addEventListener('click',()=> window.open(n.url,'_blank','noopener'));
       const img=document.createElement('img'); img.src = n.image || `https://www.google.com/s2/favicons?domain=${encodeURIComponent(n.domain)}&sz=64`; img.alt=''; b.appendChild(img);
       const t=document.createElement('div'); t.className='btxt'; t.textContent = Math.round(50 + n.rel*50); b.appendChild(t);
 
-      b.addEventListener('mouseenter', e=>{
-        tip.style.display='block'; tip.style.left=(e.pageX+12)+'px'; tip.style.top=(e.pageY-10)+'px';
-        tip.innerHTML = `<strong>${escapeHtml(n.title)}</strong><div class="src">${escapeHtml(n.domain)} • ${new Date(n.ts).toLocaleString()}</div><div class="muted">${escapeHtml(n.desc||'')}</div>`;
-      });
+      b.addEventListener('mouseenter', e=>{ tip.style.display='block'; tip.style.left=(e.pageX+12)+'px'; tip.style.top=(e.pageY-10)+'px'; tip.innerHTML=`<strong>${escapeHtml(n.title)}</strong><div class="src">${escapeHtml(n.domain)} • ${new Date(n.ts).toLocaleString()}</div><div class="muted">${escapeHtml(n.desc||'')}</div>`; });
       b.addEventListener('mouseleave', ()=> tip.style.display='none');
 
       col.appendChild(v); col.appendChild(tag); col.appendChild(b); bubbleLayer.appendChild(col);
     });
 
-    metaInfo.textContent = `Showing ${list.length} bubbles • Data: CoinGecko (price), GNews (news)`;
+    document.getElementById('metaInfo').textContent = `Showing ${list.length} bubbles • Data: CoinGecko (price), GNews (news)`;
   }
 
   function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-  // ========== PIPELINE ==========
+  // -------- PIPELINE --------
   async function init(){
     try{
       showOverlay('Loading BTC…'); stepOverlay(10,'Price…');
@@ -257,13 +267,18 @@
       setTop(100); stepOverlay(100,'Done'); setTimeout(hideOverlay, 350);
     }catch(e){
       console.error(e);
-      ovTxt.textContent='Load error. Please refresh.';
-      ovFill.style.background='#ef4444';
+      errBox.textContent = 'Error: ' + (e && e.message ? e.message : String(e));
+      ovTxt.textContent='Load error. Please refresh.'; ovFill.style.background='#ef4444';
     }
   }
 
-  // ========== START ==========
-  init();
+  // -------- START --------
+  // Run after DOM is ready to avoid race conditions on iOS
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
 </script>
 </body>
